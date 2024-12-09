@@ -1,0 +1,334 @@
+#!/bin/bash
+
+# Function to display main help text
+show_main_help() {
+    echo "Usage: sqzl <command> [options]"
+    echo
+    echo "Commands:"
+    echo "  bump    - Bump numerical prefixes of files up or down"
+    echo "  create  - Create a new numbered script"
+    echo "  run     - Run a series of numbered scripts in order"
+    echo
+    echo "Use 'sqzl <command> --help' for more information about a command."
+}
+
+# === BUMP COMMAND FUNCTIONS ===
+show_bump_help() {
+    echo "Usage: sqzl bump [-n] [-d [step] | -u [step]] [<target_file>]"
+    echo
+    echo "Bump numerical prefixes of files, starting from the specified target file"
+    echo "or the first file in numerical order if no target is specified."
+    echo
+    echo "Arguments:"
+    echo "  <target_file>  The file from which to start bumping numerical prefixes (optional)"
+    echo
+    echo "Options:"
+    echo "  -n             Dry run: show what would be done without making changes"
+    echo "  -d [step]      Bump down: decrease numerical prefixes by step (default: 1)"
+    echo "  -u [step]      Bump up: increase numerical prefixes by step (default: 1)"
+}
+
+# ... [Previous bump functions remain the same] ...
+create_backup() {
+    local file="$1"
+    local backup_dir="$2"
+    mkdir -p "$backup_dir"
+    cp "$file" "$backup_dir/" || { echo "Error: Failed to create backup of $file"; exit 1; }
+}
+
+bump_numerical_prefix() {
+    local target_file="$2"
+    local dry_run="$1"
+    local direction="$3"
+    local step="$4"
+    local files=()
+    local found=0
+    local max_prefix=0
+    local max_width=0
+    local backup_dir="./backup_files_$(date +%Y%m%d%H%M%S)"
+    local files_to_rename=()
+
+    for file in [0-9]*; do
+        if [[ -f "$file" ]]; then
+            files+=("$file")
+            prefix=$(echo "$file" | sed 's/^0*//' | sed 's/[^0-9].*$//')
+            width=$(echo "$file" | sed 's/[^0-9].*$//' | wc -c)
+            ((width--))
+            if (( prefix > max_prefix )); then
+                max_prefix=$prefix
+            fi
+            if (( width > max_width )); then
+                max_width=$width
+            fi
+        fi
+    done
+
+    IFS=$'\n' sorted_files=($(printf '%s\n' "${files[@]}" | sort -V))
+    unset IFS
+
+    # If no target file is specified, use the first file
+    if [[ -z "$target_file" ]]; then
+        target_file="${sorted_files[0]}"
+    fi
+
+    for ((i=0; i<${#sorted_files[@]}; i++)); do
+        file="${sorted_files[i]}"
+        if [[ $found -eq 1 || "$file" == "$target_file" ]]; then
+            found=1
+            prefix=$(echo "$file" | sed 's/^0*//' | sed 's/[^0-9].*$//')
+            if [[ "$direction" == "down" ]]; then
+                prefix=$((prefix - step))
+                [[ $prefix -lt 0 ]] && prefix=0
+            else
+                prefix=$((prefix + step))
+            fi
+            if (( prefix > max_prefix )); then
+                max_prefix=$prefix
+            fi
+            new_prefix=$(printf "%0*d" $max_width $prefix)
+            new_file=$(echo "$file" | sed "s/^[0-9]*/$new_prefix/")
+            if [[ "$dry_run" == "true" ]]; then
+                echo "Renamed: $file -> $new_file"
+            else
+                if [[ "$file" != "$new_file" ]]; then
+                    create_backup "$file" "$backup_dir"
+                    files_to_rename+=("$file")
+                fi
+            fi
+        fi
+    done
+
+    if [[ "$dry_run" == "false" ]]; then
+        for file in "${files_to_rename[@]}"; do
+            prefix=$(echo "$file" | sed 's/^0*//' | sed 's/[^0-9].*$//')
+            if [[ "$direction" == "down" ]]; then
+                prefix=$((prefix - step))
+                [[ $prefix -lt 0 ]] && prefix=0
+            else
+                prefix=$((prefix + step))
+            fi
+            new_prefix=$(printf "%0*d" $max_width $prefix)
+            new_file=$(echo "$file" | sed "s/^[0-9]*/$new_prefix/")
+            mv "$file" "$new_file" || { echo "Error: Failed to move $file to $new_file"; exit 1; }
+            echo "Renamed: $file -> $new_file"
+        done
+        echo "All files renamed successfully. Deleting backups..."
+        rm -rf "$backup_dir" || { echo "Warning: Failed to delete backup directory $backup_dir"; }
+    fi
+}
+
+bump_command() {
+    local dry_run=false
+    local direction="up"
+    local step=1
+    local OPTIND=1
+
+    while getopts ":hnd:u:-:" opt; do
+        case ${opt} in
+            h )
+                show_bump_help
+                return 0
+                ;;
+            n )
+                dry_run=true
+                ;;
+            d )
+                direction="down"
+                if [[ -n ${OPTARG} ]]; then
+                    if [[ ${OPTARG} =~ ^[0-9]+$ ]]; then
+                        step=${OPTARG}
+                    else
+                        echo "Error: -d requires a numeric argument or no argument." >&2
+                        exit 1
+                    fi
+                else
+                    step=1
+                fi
+                ;;
+            u )
+                direction="up"
+                if [[ -n ${OPTARG} ]]; then
+                    if [[ ${OPTARG} =~ ^[0-9]+$ ]]; then
+                        step=${OPTARG}
+                    else
+                        echo "Error: -u requires a numeric argument or no argument." >&2
+                        exit 1
+                    fi
+                else
+                    step=1
+                fi
+                ;;
+            - )
+                case "${OPTARG}" in
+                    help)
+                        show_help
+                        exit 0
+                        ;;
+                    *)
+                        echo "Invalid option: --${OPTARG}" >&2
+                        show_help
+                        exit 1
+                        ;;
+                esac
+                ;;
+            : )
+                if [[ ${OPTARG} == "d" ]]; then
+                    direction="down"
+                    step=1
+                elif [[ ${OPTARG} == "u" ]]; then
+                    direction="up"
+                    step=1
+                else
+                    echo "Error: Option -${OPTARG} requires an argument." >&2
+                    exit 1
+                fi
+                ;;
+            \? )
+                echo "Invalid Option: -$OPTARG" 1>&2
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+    shift $((OPTIND -1))
+
+    local target_file="$1"
+    bump_numerical_prefix "$dry_run" "$target_file" "$direction" "$step"
+}
+
+# === CREATE COMMAND FUNCTIONS ===
+show_create_help() {
+    echo "Usage: sqzl create [SCRIPT_NAME]"
+    echo
+    echo "Create a new Bash script with a numbered prefix."
+    echo
+    echo "Options:"
+    echo "  SCRIPT_NAME  Name for the new script (default: hello-world)"
+}
+
+find_next_available_script() {
+    local base_name=${1:-"hello-world"}
+    local extension=".sh"
+    local next_number=1
+
+    while true; do
+        local padded_number=$(printf "%03d" $next_number)
+        local new_filename="${padded_number}-${base_name}${extension}"
+
+        # Check if any file with this padded number prefix exists
+        if ! ls "${padded_number}-"*"${extension}" &> /dev/null; then
+            echo "$new_filename"
+            return
+        fi
+        ((next_number++))
+    done
+}
+
+create_script() {
+    local NAME=${1:-"hello-world"}
+    local FILENAME=$(find_next_available_script "$NAME")
+
+    echo '#!/bin/bash' > "$FILENAME"
+    echo "echo 'Hello, world!'" >> "$FILENAME"
+    chmod +x "$FILENAME"  # Make the script executable
+
+    echo "Created script: $FILENAME"
+}
+
+create_command() {
+    if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+        show_create_help
+        return 0
+    fi
+    create_script "$1"
+}
+
+# === RUN COMMAND FUNCTIONS ===
+show_run_help() {
+    echo "Usage: sqzl run [-i input_file] [-h]"
+    echo "Run a series of numbered scripts in order, passing output between them."
+    echo
+    echo "Options:"
+    echo "  -i input_file    Specify the input file (default: input.txt)"
+    echo "  -h              Display this help message"
+}
+
+run_command() {
+    local input_file="input.txt"
+    local OPTIND=1
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -i)
+                input_file="$2"
+                shift 2
+                ;;
+            -h|--help)
+                show_run_help
+                return 0
+                ;;
+            *)
+                echo "Invalid option: $1" >&2
+                show_run_help
+                return 1
+                ;;
+        esac
+    done
+
+    if [ ! -f "$input_file" ]; then
+        echo "Error: Input file '$input_file' does not exist." >&2
+        return 1
+    fi
+
+    # Generate the array of script names using ls command and a while loop
+    scripts=()
+    while IFS= read -r script; do
+        scripts+=("$script")
+    done < <(ls [0-9]*-*.sh | sort)
+
+    # Ensure the output directory exists
+    mkdir -p output
+
+    # Loop through the scripts
+    for script in "${scripts[@]}"; do
+        # Extract the step number from the filename
+        step=$(echo "$script" | sed 's/^0*\([0-9]\+\).*/\1/')
+
+        # Parse the numeric component and assign it to $num
+        num=$(echo "$script" | sed -E 's/^0*([0-9]+).*/\1/')
+
+        # Provide feedback to the user
+        echo "[running] $step"
+
+        # Execute the script associated with the current step in the pipeline
+        if [ "$num" -eq 1 ]; then
+            cat "$input_file" | "./$script" > "output/$(printf "%03d" "$num").txt"
+        else
+            cat "output/$(printf "%03d" $((num - 1))).txt" | "./$script" > "output/$(printf "%03d" "$num").txt"
+        fi
+    done
+}
+
+# === MAIN COMMAND HANDLER ===
+case "$1" in
+    "bump")
+        shift
+        bump_command "$@"
+        ;;
+    "create")
+        shift
+        create_command "$@"
+        ;;
+    "run")
+        shift
+        run_command "$@"
+        ;;
+    "--help"|"-h"|"")
+        show_main_help
+        ;;
+    *)
+        echo "Unknown command: $1"
+        echo "Run 'sqzl --help' for usage information"
+        exit 1
+        ;;
+esac
